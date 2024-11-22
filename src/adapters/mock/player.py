@@ -6,7 +6,8 @@ from src.domain.player import Action, Playback, PlaybackFactory
 
 
 class PrintAction(Action):
-    def __init__(self, text):
+    def __init__(self, timestamp, text):
+        self.timestamp = timestamp
         self.text = text
 
     def execute(self):
@@ -14,7 +15,8 @@ class PrintAction(Action):
 
 
 class SilenceAction(Action):
-    def __init__(self, ms: int):
+    def __init__(self, timestamp, ms: int):
+        self.timestamp = timestamp
         self.ms = ms
 
     def execute(self):
@@ -35,7 +37,7 @@ class TextPlaybackBuilder(PlaybackFactory):
         cursor = 0
         for command in payload.split(b'&'):
             timestamp, text = command.split(b':', maxsplit=1)
-            action = PrintAction(text=str(text))
+            action = PrintAction(timestamp=int(timestamp), text=str(text))
             action_timeline = ActionTimeline(
                 start=int(timestamp),
                 duration=0,
@@ -47,7 +49,7 @@ class TextPlaybackBuilder(PlaybackFactory):
             start = action_timeline.start
             silence_duration = start - cursor
             if silence_duration:
-                silence_action = SilenceAction(ms=silence_duration)
+                silence_action = SilenceAction(timestamp=cursor, ms=silence_duration)
                 actions.append(silence_action)
             actions.append(action_timeline.action)
             cursor = start + action_timeline.duration
