@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import bisect
 import abc
-import dataclasses
+import bisect
 import enum
+
+from src.domain.exceptions import PlaybackIsFinished
 
 
 class Action(abc.ABC):
@@ -12,10 +13,6 @@ class Action(abc.ABC):
     @abc.abstractmethod
     def execute(self):
         ...
-
-
-class PlaybackIsFinished(Exception):
-    pass
 
 
 class Playback:
@@ -42,13 +39,32 @@ class Playback:
         last_action = self.actions[-1]
         return last_action.timestamp
 
-    def set_cursor(self, timestamp: int) -> None:
+    def set_cursor(self, timestamp: int):
         self.cursor = bisect.bisect_left(self.actions, timestamp, key=lambda action: action.timestamp)
 
 
-class PlaybackFactory(abc.ABC):
+class PlaybackFactory:
+    def create_playback(self, payload: bytes) -> Playback:
+        ...
+
+
+class PlaybackBuilder(abc.ABC):
+    """
+    Может быть востребован, когда необходимо собирать трек и отчитываться о
+    сборке или дать возможность прекратить сборку в любой момент.
+    Использовать его сможет например состояние плейера
+    """
+
     @abc.abstractmethod
-    def create_playback(self, source: bytes) -> Playback:
+    def start_build(self, payload: bytes):
+        ...
+
+    @abc.abstractmethod
+    def next(self):
+        ...
+
+    @abc.abstractmethod
+    def create_playback(self) -> Playback:
         ...
 
 
@@ -59,20 +75,20 @@ class PlayerStateType(enum.Enum):
 
 
 class Player:
-    def __init__(self, playback_factory: PlaybackFactory) -> None:
+    def __init__(self, playback_factory: PlaybackFactory):
         self.playback_factory = playback_factory
         self.states: dict[PlayerStateType, PlayerState] = {
             PlayerStateType.PLAYING: PlayingState(player=self),
             PlayerStateType.PAUSED: PauseState(player=self),
-            PlayerStateType.NO_PLAYBACK: NoPlaybackState(player=self),
+            PlayerStateType.NO_PLAYBACK: NoPlaybackState(player=self)
         }
         self.state: PlayerState = self.states[PlayerStateType.NO_PLAYBACK]
         self.playback = None
 
-    def load_playback(self, source: bytes) -> None:
+    def load_playback(self, source: bytes):
         self.state.load_playback(source=source)
 
-    def clear_playback(self) -> None:
+    def clear_playback(self):
         self.state.clear_playback()
 
     def play(self):
@@ -84,14 +100,11 @@ class Player:
     def stop(self):
         self.state.stop()
 
-    def set_cursor(self, timestamp: int) -> None:
+    def set_cursor(self, timestamp: int):
         self.state.set_cursor(timestamp=timestamp)
 
-    def get_current_timestamp(self) -> int:
-        return self.state.get_current_timestamp()
-
-    def get_last_timestamp(self) -> int:
-        return self.state.get_last_timestamp()
+    def set_state(self, state_type: PlayerStateType):
+        self.state = self.states[state_type]
 
     def __iter__(self):
         return self
@@ -108,11 +121,11 @@ class PlayerState(abc.ABC):
         self.player = player
 
     @abc.abstractmethod
-    def load_playback(self, source: bytes) -> None:
+    def load_playback(self, source: bytes):
         ...
 
     @abc.abstractmethod
-    def clear_playback(self) -> None:
+    def clear_playback(self):
         ...
 
     @abc.abstractmethod
@@ -128,15 +141,7 @@ class PlayerState(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def set_cursor(self, timestamp: int) -> None:
-        ...
-
-    @abc.abstractmethod
-    def get_current_timestamp(self) -> int:
-        ...
-
-    @abc.abstractmethod
-    def get_last_timestamp(self) -> int:
+    def set_cursor(self, timestamp: int):
         ...
 
     @abc.abstractmethod
@@ -145,47 +150,45 @@ class PlayerState(abc.ABC):
 
 
 class PlayingState(PlayerState):
-    def load_playback(self, source: bytes) -> None:
-        self.player.playback_factory.create_playback(source=source)
-        self.player.state = self.player.states[PlayerStateType.PAUSED]
+    def load_playback(self, source: bytes):
+        self.player.playback = self.player.playback_factory.create_playback(payload=source)
+        self.player.set_state(state_type=PlayerStateType.PAUSED)
 
-    def clear_playback(self) -> None:
+    def clear_playback(self):
         self.player.playback = None
-        self.player.state = self.player.states[PlayerStateType.NO_PLAYBACK]
+        self.player.set_state(state_type=PlayerStateType.NO_PLAYBACK)
 
     def play(self):
-        self.player.playback.execute_action()
+        try:
+            self.player.playback.execute_action()
+        except PlaybackIsFinished:
+            self.player.playback.set_cursor(0)
+            self.player.set_state(state_type=PlayerStateType.PAUSED)
 
     def pause(self):
-        self.player.state = self.player.states[PlayerStateType.PAUSED]
+        self.player.set_state(state_type=PlayerStateType.PAUSED)
 
     def stop(self):
         self.player.playback.set_cursor(0)
-        self.player.state = self.player.states[PlayerStateType.PAUSED]
+        self.player.set_state(state_type=PlayerStateType.PAUSED)
 
-    def set_cursor(self, timestamp: int) -> None:
+    def set_cursor(self, timestamp: int):
         self.player.playback.set_cursor(timestamp=timestamp)
-
-    def get_current_timestamp(self) -> int:
-        return self.player.playback.get_current_timestamp()
-
-    def get_last_timestamp(self) -> int:
-        return self.player.playback.get_last_timestamp()
 
     def next(self):
         self.play()
 
 
 class PauseState(PlayerState):
-    def load_playback(self, source: bytes) -> None:
-        self.player.playback_factory.create_playback(source=source)
+    def load_playback(self, source: bytes):
+        self.player.playback = self.player.playback_factory.create_playback(payload=source)
 
-    def clear_playback(self) -> None:
+    def clear_playback(self):
         self.player.playback = None
-        self.player.state = self.player.states[PlayerStateType.NO_PLAYBACK]
+        self.player.set_state(state_type=PlayerStateType.NO_PLAYBACK)
 
     def play(self):
-        pass
+        self.player.set_state(state_type=PlayerStateType.PLAYING)
 
     def pause(self):
         pass
@@ -193,22 +196,19 @@ class PauseState(PlayerState):
     def stop(self):
         self.player.playback.set_cursor(0)
 
-    def set_cursor(self, timestamp: int) -> None:
+    def set_cursor(self, timestamp: int):
         self.player.playback.set_cursor(timestamp=timestamp)
 
-    def get_current_timestamp(self) -> int:
-        return self.player.playback.get_current_timestamp()
-
-    def get_last_timestamp(self) -> int:
-        return self.player.playback.get_last_timestamp()
+    def next(self):
+        self.pause()
 
 
 class NoPlaybackState(PlayerState):
-    def load_playback(self, source: bytes) -> None:
-        self.player.playback_factory.create_playback(source=source)
-        self.player.state = self.player.states[PlayerStateType.PAUSED]
+    def load_playback(self, source: bytes):
+        self.player.playback = self.player.playback_factory.create_playback(payload=source)
+        self.player.set_state(state_type=PlayerStateType.PAUSED)
 
-    def clear_playback(self) -> None:
+    def clear_playback(self):
         pass
 
     def play(self):
@@ -218,14 +218,10 @@ class NoPlaybackState(PlayerState):
         pass
 
     def stop(self):
-        self.player.playback.set_cursor(0)
+        pass
 
-    def set_cursor(self, timestamp: int) -> None:
-        self.player.playback.set_cursor(timestamp=timestamp)
+    def set_cursor(self, timestamp: int):
+        pass
 
-    def get_current_timestamp(self) -> int:
-        return self.player.playback.get_current_timestamp()
-
-    def get_last_timestamp(self) -> int:
-        return self.player.playback.get_last_timestamp()
-
+    def next(self):
+        pass
