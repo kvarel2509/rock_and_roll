@@ -1,12 +1,12 @@
-import contextlib
+import json
 import select
 import socket
-import time
 
 from src.domain.engine import Port, Session
-from src.domain.exceptions import PortException, SessionIsClosed
+from src.domain.exceptions import PortException, SessionIsClosed, CommandIsNotAvailable, InvalidCommand
 from src.domain.player import Player
 from .player import TextPlaybackBuilder
+from ...entrypoints.mock.monitor import MOCK_MONITOR_SOCKET_HOST, MOCK_MONITOR_SOCKET_PORT
 
 
 class SocketSession(Session):
@@ -18,29 +18,43 @@ class SocketSession(Session):
         to_read, _, _ = select.select([self.client_socket], [], [], 0)
         if self.client_socket in to_read:
             body = self.client_socket.recv(4096).split(b':', maxsplit=1)
-            if len(body) == 1:
-                [command_type] = body
-                if command_type is b'':
-                    self.client_socket.close()
-                    raise SessionIsClosed()
-                if command_type == b'clear':
-                    return self.player.clear_playback()
-                elif command_type == b'play':
-                    return self.player.play()
-                elif command_type == b'pause':
-                    return self.player.pause()
-                elif command_type == b'stop':
-                    return self.player.stop()
-            elif len(body) == 2:
-                command_type, payload = body
-                if command_type == b'load':
-                    print('111111')
-                    return self.player.load_playback(source=payload)
-                elif command_type == b'cursor':
-                    with contextlib.suppress(ValueError):
+            try:
+                if len(body) == 1:
+                    [command_type] = body
+                    if command_type is b'':
+                        self.client_socket.close()
+                        raise SessionIsClosed()
+                    if command_type == b'clear':
+                        self.player.clear_playback()
+                    elif command_type == b'play':
+                        self.player.play()
+                    elif command_type == b'pause':
+                        self.player.pause()
+                    elif command_type == b'stop':
+                        self.player.stop()
+                    else:
+                        raise InvalidCommand()
+                elif len(body) == 2:
+                    command_type, payload = body
+                    if command_type == b'load':
+                        self.player.load_playback(source=payload)
+                    elif command_type == b'cursor':
                         payload = int(payload)
-                        return self.player.set_cursor(timestamp=payload)
-        return self.player.next()
+                        self.player.set_cursor(timestamp=payload)
+                    else:
+                        raise InvalidCommand()
+                else:
+                    raise InvalidCommand()
+            except CommandIsNotAvailable:
+                response = {'type': 'COMMAND_NOT_AVAILABLE'}
+                self.client_socket.sendall(json.dumps(response).encode())
+            except InvalidCommand:
+                response = {'type': 'INVALID_COMMAND'}
+                self.client_socket.sendall(json.dumps(response).encode())
+            else:
+                response = {'type': 'COMPLETED'}
+                self.client_socket.sendall(json.dumps(response).encode())
+        self.player.next()
 
 
 class SocketPort(Port):
@@ -52,15 +66,16 @@ class SocketPort(Port):
     def create_session(self) -> Session:
         try:
             client_socket, _ = self.server_socket.accept()
+            monitor_socket = socket.create_connection((MOCK_MONITOR_SOCKET_HOST, MOCK_MONITOR_SOCKET_PORT))
             print('Подключено', _)
             return SocketSession(
                 client_socket=client_socket,
-                player=self.create_player()
+                player=Player(
+                    playback_factory=TextPlaybackBuilder(
+                        control_socket=client_socket,
+                        monitor_socket=monitor_socket
+                    )
+                )
             )
         except BlockingIOError:
             raise PortException()
-
-    def create_player(self) -> Player:
-        return Player(
-            playback_factory=TextPlaybackBuilder()
-        )
