@@ -1,12 +1,12 @@
 import json
 import select
 import socket
+from serial import Serial
 
 from src.domain.engine import SessionFactory, Session
 from src.domain.exceptions import SessionFactoryError, SessionIsClosed, CommandIsNotAvailable, InvalidCommand
 from src.domain.player import Player
 from .player import TextPlaybackBuilder
-from ...entrypoints.socket.monitor import MOCK_MONITOR_SOCKET_HOST, MOCK_MONITOR_SOCKET_PORT
 
 
 class SocketSession(Session):
@@ -15,15 +15,14 @@ class SocketSession(Session):
         self.player = player
 
     def next(self):
-        to_read, _, _ = select.select([self.client_socket], [], [], 0)
-        if self.client_socket in to_read:
-            body = self.client_socket.recv(4096).split(b':', maxsplit=1)
+        message = self.read_socket()
+        if message is None:
+            self.player.next()
+        else:
+            message = message.split(b':', maxsplit=1)
             try:
-                if len(body) == 1:
-                    [command_type] = body
-                    if command_type == b'':
-                        self.client_socket.close()
-                        raise SessionIsClosed()
+                if len(message) == 1:
+                    [command_type] = message
                     if command_type == b'clear':
                         self.player.clear_playback()
                     elif command_type == b'play':
@@ -34,8 +33,8 @@ class SocketSession(Session):
                         self.player.stop()
                     else:
                         raise InvalidCommand()
-                elif len(body) == 2:
-                    command_type, payload = body
+                elif len(message) == 2:
+                    command_type, payload = message
                     if command_type == b'load':
                         self.player.load_playback(source=payload)
                     elif command_type == b'cursor':
@@ -51,28 +50,37 @@ class SocketSession(Session):
             except InvalidCommand:
                 response = {'type': 'INVALID_COMMAND'}
                 self.client_socket.sendall(json.dumps(response).encode())
+            except SessionIsClosed:
+                self.client_socket.close()
+                raise
             else:
                 response = {'type': 'COMPLETED'}
                 self.client_socket.sendall(json.dumps(response).encode())
-        self.player.next()
+
+    def read_socket(self):
+        to_read, _, _ = select.select([self.client_socket], [], [], 0)
+        if self.client_socket in to_read:
+            message = self.client_socket.recv(4096)
+            if message == b'':
+                raise SessionIsClosed()
+            return message
 
 
 class SocketSessionFactory(SessionFactory):
-    def __init__(self, host: str, port: int):
-        self.server_socket = socket.create_server((host, port), reuse_port=True)
-        self.server_socket.settimeout(0)
-        self.server_socket.listen()
+    def __init__(self, server_socket: socket.socket, uart_client: Serial, monitor_socket: socket.socket):
+        self.server_socket = server_socket
+        self.uart_client = uart_client
+        self.monitor_socket = monitor_socket
 
     def create_session(self) -> Session:
         try:
             client_socket, _ = self.server_socket.accept()
-            monitor_socket = socket.create_connection((MOCK_MONITOR_SOCKET_HOST, MOCK_MONITOR_SOCKET_PORT))
-            print('Подключено', _)
             return SocketSession(
                 client_socket=client_socket,
                 player=Player(
                     playback_factory=TextPlaybackBuilder(
-                        monitor_socket=monitor_socket
+                        uart_client=self.uart_client,
+                        monitor_socket=self.monitor_socket
                     )
                 )
             )

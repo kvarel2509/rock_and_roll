@@ -5,6 +5,7 @@ import bisect
 import enum
 
 from src.domain.exceptions import PlaybackIsFinished, CommandIsNotAvailable
+from src.generic.observer import Observable, Observer
 
 
 class Action(abc.ABC):
@@ -17,21 +18,27 @@ class Action(abc.ABC):
         ...
 
 
-class Playback:
+class Playback(Observable, abc.ABC):
     def __init__(self, actions: list[Action]):
         self.actions = actions
         self.cursor = 0
+        self.observers = set()
 
     def execute_action(self):
         action = self.get_current_action()
         action.execute()
         self.cursor += 1
+        self.notify_observers()
 
     def get_current_action(self) -> Action:
         try:
             return self.actions[self.cursor]
         except IndexError:
             raise PlaybackIsFinished()
+
+    def set_cursor(self, timestamp: int):
+        self.cursor = bisect.bisect_left(self.actions, timestamp, key=lambda action: action.get_timestamp())
+        self.notify_observers()
 
     def get_current_timestamp(self) -> int:
         current_action = self.get_current_action()
@@ -41,8 +48,15 @@ class Playback:
         last_action = self.actions[-1]
         return last_action.get_timestamp()
 
-    def set_cursor(self, timestamp: int):
-        self.cursor = bisect.bisect_left(self.actions, timestamp, key=lambda action: action.get_timestamp())
+    def add_observer(self, observer: Observer) -> None:
+        self.observers.add(observer)
+
+    def remove_observer(self, observer: Observer) -> None:
+        self.observers.discard(observer)
+
+    def notify_observers(self) -> None:
+        for observer in self.observers:
+            observer.update(observable=self)
 
 
 class PlaybackFactory:

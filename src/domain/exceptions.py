@@ -13,7 +13,7 @@ class CommandIsNotAvailable(Exception):
     pass
 
 
-class PortException(Exception):
+class SessionFactoryError(Exception):
     pass
 
 

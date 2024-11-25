@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 from typing import Iterable
 
-from src.domain.exceptions import SessionIsClosed, PortException
+from src.domain.exceptions import SessionIsClosed, SessionFactoryError
 
 
 class Session(abc.ABC):
@@ -19,16 +19,16 @@ class Session(abc.ABC):
         ...
 
 
-class Port(abc.ABC):
+class SessionFactory(abc.ABC):
     @abc.abstractmethod
     def create_session(self) -> Session:
         ...
 
 
 class Engine:
-    def __init__(self, ports: Iterable[Port]):
-        self.ports = list(ports)
-        assert self.ports, 'Ports cannot be empty'
+    def __init__(self, session_factories: Iterable[SessionFactory]):
+        self.session_factories = list(session_factories)
+        assert self.session_factories, 'session_factories cannot be empty'
 
     def run(self):
         while True:
@@ -38,8 +38,8 @@ class Engine:
     def create_session(self) -> Session:
         cursor = 0
         while True:
-            port = self.ports[cursor % len(self.ports)]
+            session_factory = self.session_factories[cursor % len(self.session_factories)]
             try:
-                return port.create_session()
-            except PortException:
+                return session_factory.create_session()
+            except SessionFactoryError:
                 cursor += 1
