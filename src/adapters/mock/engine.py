@@ -21,7 +21,7 @@ class SocketSession(Session):
             try:
                 if len(body) == 1:
                     [command_type] = body
-                    if command_type is b'':
+                    if command_type == b'':
                         self.client_socket.close()
                         raise SessionIsClosed()
                     if command_type == b'clear':
@@ -72,7 +72,6 @@ class SocketPort(Port):
                 client_socket=client_socket,
                 player=Player(
                     playback_factory=TextPlaybackBuilder(
-                        control_socket=client_socket,
                         monitor_socket=monitor_socket
                     )
                 )

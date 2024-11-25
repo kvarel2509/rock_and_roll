@@ -4,6 +4,7 @@ import socket
 import time
 
 from src.domain.player import Action, Playback, PlaybackFactory
+from src.generic.observer import Observer
 
 
 class PrintAction(Action):
@@ -24,7 +25,7 @@ class KaraokeTextPrintAction(Action):
         self.timestamp = timestamp
         self.text = text
 
-    def  get_timestamp(self) -> int:
+    def get_timestamp(self) -> int:
         return self.timestamp
 
     def execute(self):
@@ -44,27 +45,25 @@ class SilenceAction(Action):
         time.sleep(self.ms / 1000)
 
 
-class TimelineNotifyActionDecorator(Action):
-    def __init__(
-            self,
-            client_socket: socket.socket,
-            action: Action,
-    ):
-        self.action = action
+class TimelineNotifyObserver(Observer):
+    def __init__(self, client_socket: socket.socket):
         self.client_socket = client_socket
+        self.prev_timestamp = None
 
-    def get_timestamp(self) -> int:
-        return self.action.get_timestamp()
+    def update(self, observable: Playback):
+        current_timestamp = observable.get_current_timestamp()
+        if current_timestamp != self.prev_timestamp:
+            self.notify(timestamp=current_timestamp)
+            self.prev_timestamp = current_timestamp
 
-    def execute(self):
+    def notify(self, timestamp: int):
         notification = {
             'type': 'TIMELINE_CHANGED',
             'payload': {
-                'current_timestamp': self.get_timestamp(),
+                'current_timestamp': timestamp,
             }
         }
         self.client_socket.send(json.dumps(notification).encode())
-        self.action.execute()
 
 
 @dataclasses.dataclass
@@ -75,8 +74,7 @@ class ActionTimeline:
 
 
 class TextPlaybackBuilder(PlaybackFactory):
-    def __init__(self, control_socket: socket.socket, monitor_socket: socket.socket):
-        self.control_socket = control_socket
+    def __init__(self, monitor_socket: socket.socket):
         self.monitor_socket = monitor_socket
 
     def create_playback(self, payload: bytes) -> Playback:
@@ -86,21 +84,15 @@ class TextPlaybackBuilder(PlaybackFactory):
         for command in payload.split(b'&'):
             timestamp, command_type, command = command.split(b':', maxsplit=2)
             if command_type == b'':
-                action = TimelineNotifyActionDecorator(
-                    client_socket=self.monitor_socket,
-                    action=PrintAction(
-                        timestamp=int(timestamp),
-                        text=str(command)
-                    )
+                action = PrintAction(
+                    timestamp=int(timestamp),
+                    text=str(command)
                 )
             else:
-                action = TimelineNotifyActionDecorator(
+                action = KaraokeTextPrintAction(
                     client_socket=self.monitor_socket,
-                    action=KaraokeTextPrintAction(
-                        client_socket=self.monitor_socket,
-                        timestamp=int(timestamp),
-                        text=str(command)
-                    )
+                    timestamp=int(timestamp),
+                    text=str(command)
                 )
             action_timeline = ActionTimeline(
                 start=int(timestamp),
@@ -120,4 +112,6 @@ class TextPlaybackBuilder(PlaybackFactory):
                 actions.append(silence_action)
             actions.append(action_timeline.action)
             cursor = start + action_timeline.duration
-        return Playback(actions=actions)
+        playback = Playback(actions=actions)
+        playback.add_observer(observer=TimelineNotifyObserver(client_socket=self.monitor_socket))
+        return playback
